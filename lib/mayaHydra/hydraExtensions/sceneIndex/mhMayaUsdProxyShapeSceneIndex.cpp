@@ -203,13 +203,13 @@ void MayaUsdProxyShapeSceneIndex::_ApplyPendingUpdatesOnIdle(void* clientData)
         // remove the newly added payload descendants from downstream scene
         // indices.
         if (sceneIndex->_extentsHintSceneIndex) {
-            sceneIndex->_extentsHintSceneIndex->refreshSyntheticPrims();
+            sceneIndex->_extentsHintSceneIndex->removeStaleSyntheticPrims();
         }
         sceneIndex->_usdImagingStageSceneIndex->SetStage(nullptr);
         sceneIndex->_usdImagingStageSceneIndex->SetStage(stage);
         sceneIndex->_usdImagingStageSceneIndex->ApplyPendingUpdates();
         if (sceneIndex->_extentsHintSceneIndex) {
-            sceneIndex->_extentsHintSceneIndex->refreshSyntheticPrims();
+            sceneIndex->_extentsHintSceneIndex->addNewSyntheticPrims();
         }
         sceneIndex->UpdateTime();
         sceneIndex->_populated = bool(stage);

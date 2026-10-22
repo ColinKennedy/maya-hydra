@@ -101,6 +101,12 @@ public:
     FVP_API
     void refreshSyntheticPrims(bool sendNotifications = true);
 
+    FVP_API
+    void removeStaleSyntheticPrims(bool sendNotifications = true);
+
+    FVP_API
+    void addNewSyntheticPrims(bool sendNotifications = true);
+
 protected:
     BboxSceneIndex(
         const PXR_NS::HdSceneIndexBaseRefPtr& inputSceneIndex,

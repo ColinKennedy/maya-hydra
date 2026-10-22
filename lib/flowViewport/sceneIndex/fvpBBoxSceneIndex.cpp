@@ -474,21 +474,39 @@ SdfPathVector BboxSceneIndex::GetChildPrimPaths(const SdfPath& primPath) const
     return result;
 }
 
-void BboxSceneIndex::refreshSyntheticPrims(bool sendNotifications)
+namespace {
+std::set<SdfPath> _ComputeSyntheticPrimPaths(
+    const BboxSceneIndex::ChildPrimPathsProvider& childPrimPathsProvider,
+    const BboxSceneIndex::PrimDataSourceProvider& primDataSourceProvider,
+    const HdSceneIndexBaseRefPtr& inputSceneIndex,
+    const std::function<bool(const SdfPath&, const HdSceneIndexPrim&)>& shouldConvert)
 {
     std::set<SdfPath> newPaths;
-    if (_childPrimPathsProvider) {
+    if (childPrimPathsProvider) {
         for (const SdfPath& path
-             : _childPrimPathsProvider(SdfPath::AbsoluteRootPath())) {
-            HdSceneIndexPrim prim = GetInputSceneIndex()->GetPrim(path);
-            if (!prim.dataSource && _primDataSourceProvider) {
-                prim.dataSource = _primDataSourceProvider(path);
+             : childPrimPathsProvider(SdfPath::AbsoluteRootPath())) {
+            HdSceneIndexPrim prim = inputSceneIndex->GetPrim(path);
+            if (!prim.dataSource && primDataSourceProvider) {
+                prim.dataSource = primDataSourceProvider(path);
             }
-            if (_ShouldConvert(path, prim)) {
+            if (shouldConvert(path, prim)) {
                 newPaths.insert(path);
             }
         }
     }
+    return newPaths;
+}
+} // namespace
+
+void BboxSceneIndex::removeStaleSyntheticPrims(bool sendNotifications)
+{
+    const std::set<SdfPath> newPaths = _ComputeSyntheticPrimPaths(
+        _childPrimPathsProvider,
+        _primDataSourceProvider,
+        GetInputSceneIndex(),
+        [this](const SdfPath& path, const HdSceneIndexPrim& prim) {
+            return _ShouldConvert(path, prim);
+        });
 
     if (sendNotifications && _IsObserved()) {
         HdSceneIndexObserver::RemovedPrimEntries removed;
@@ -500,7 +518,28 @@ void BboxSceneIndex::refreshSyntheticPrims(bool sendNotifications)
         if (!removed.empty()) {
             _SendPrimsRemoved(removed);
         }
+    }
 
+    for (auto it = _syntheticPrimPaths.begin(); it != _syntheticPrimPaths.end();) {
+        if (newPaths.count(*it) == 0) {
+            it = _syntheticPrimPaths.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void BboxSceneIndex::addNewSyntheticPrims(bool sendNotifications)
+{
+    const std::set<SdfPath> newPaths = _ComputeSyntheticPrimPaths(
+        _childPrimPathsProvider,
+        _primDataSourceProvider,
+        GetInputSceneIndex(),
+        [this](const SdfPath& path, const HdSceneIndexPrim& prim) {
+            return _ShouldConvert(path, prim);
+        });
+
+    if (sendNotifications && _IsObserved()) {
         HdSceneIndexObserver::AddedPrimEntries added;
         for (const SdfPath& path : newPaths) {
             if (_syntheticPrimPaths.count(path) == 0) {
@@ -512,7 +551,13 @@ void BboxSceneIndex::refreshSyntheticPrims(bool sendNotifications)
         }
     }
 
-    _syntheticPrimPaths = std::move(newPaths);
+    _syntheticPrimPaths.insert(newPaths.begin(), newPaths.end());
+}
+
+void BboxSceneIndex::refreshSyntheticPrims(bool sendNotifications)
+{
+    removeStaleSyntheticPrims(sendNotifications);
+    addNewSyntheticPrims(sendNotifications);
 }
 
 void BboxSceneIndex::_PrimsAdded(const HdSceneIndexBase& sender, const HdSceneIndexObserver::AddedPrimEntries& entries)

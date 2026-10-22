@@ -164,7 +164,56 @@ void MayaUsdProxyShapeSceneIndex::_PopulateOnIdle(void* clientData)
 void MayaUsdProxyShapeSceneIndex::_ObjectsChanged(
     const MAYAUSDAPI_NS::ProxyStageObjectsChangedNotice& notice)
 {
-    _PopulateAndApplyPendingChanges();
+    // MayaUSD's forwarded objects-changed notice can arrive before the USD
+    // imaging scene index has queued its corresponding changes. Applying here
+    // removes a synthetic unloaded-payload bound before its replacement
+    // geometry is available, leaving the render index empty. Coalesce changes
+    // and apply them after all synchronous USD notice listeners have run.
+    if (!_applyPendingUpdatesOnIdlePending.exchange(true)) {
+        auto* self = new MayaUsdProxyShapeSceneIndexRefPtr(this);
+        const MStatus status = MGlobal::executeTaskOnIdle(
+            &_ApplyPendingUpdatesOnIdle, self, MGlobal::kHighIdlePriority);
+        if (!status) {
+            _applyPendingUpdatesOnIdlePending = false;
+            delete self;
+        }
+    }
+}
+
+void MayaUsdProxyShapeSceneIndex::_ApplyPendingUpdatesOnIdle(void* clientData)
+{
+    std::unique_ptr<MayaUsdProxyShapeSceneIndexRefPtr> self(
+        static_cast<MayaUsdProxyShapeSceneIndexRefPtr*>(clientData));
+    MayaUsdProxyShapeSceneIndexRefPtr sceneIndex = *self;
+    sceneIndex->_applyPendingUpdatesOnIdlePending = false;
+    if (sceneIndex->_dagNodeHandle.isValid() && sceneIndex->_dagNodeHandle.isAlive()) {
+        // Payload load-rule changes alter composition beneath an existing
+        // model prim, but MayaUSD 0.35 / USD 23.11 does not leave sufficient
+        // pending scene-index updates for ApplyPendingUpdates() to repopulate
+        // the newly composed descendants. Reinstall the current stage so USD
+        // imaging emits a complete remove/add sequence, then update the
+        // synthetic extents-hint representation from the same stage state.
+        const UsdStageRefPtr stage = sceneIndex->_proxyStage.getUsdStage();
+        sceneIndex->_stage = stage;
+        if (sceneIndex->_sharedStage) {
+            *sceneIndex->_sharedStage = stage;
+        }
+        // Remove a synthetic model prim before USD imaging adds a real prim at
+        // the same path. Removing the synthetic parent afterward would also
+        // remove the newly added payload descendants from downstream scene
+        // indices.
+        if (sceneIndex->_extentsHintSceneIndex) {
+            sceneIndex->_extentsHintSceneIndex->refreshSyntheticPrims();
+        }
+        sceneIndex->_usdImagingStageSceneIndex->SetStage(nullptr);
+        sceneIndex->_usdImagingStageSceneIndex->SetStage(stage);
+        sceneIndex->_usdImagingStageSceneIndex->ApplyPendingUpdates();
+        if (sceneIndex->_extentsHintSceneIndex) {
+            sceneIndex->_extentsHintSceneIndex->refreshSyntheticPrims();
+        }
+        sceneIndex->UpdateTime();
+        sceneIndex->_populated = bool(stage);
+    }
 }
 
 void MayaUsdProxyShapeSceneIndex::_PopulateAndApplyPendingChanges() 

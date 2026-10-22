@@ -113,6 +113,7 @@ private:
     void _StageInvalidate(const MAYAUSDAPI_NS::ProxyStageInvalidateNotice& notice);
     void _PopulateAndApplyPendingChanges();
     static void _PopulateOnIdle(void* clientData);
+    static void _ApplyPendingUpdatesOnIdle(void* clientData);
 
 private:
 
@@ -123,6 +124,7 @@ private:
     Fvp::BboxSceneIndexRefPtr       _extentsHintSceneIndex;
     std::atomic<bool>               _populated { false };
     std::atomic<bool>               _populateOnIdlePending { false };
+    std::atomic<bool>               _applyPendingUpdatesOnIdlePending { false };
     MObjectHandle                   _dagNodeHandle;
     TfNotice::Key                   _stageSetNoticeKey;
     TfNotice::Key                   _stageInvalidateNoticeKey;

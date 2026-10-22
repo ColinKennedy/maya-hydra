@@ -38,6 +38,8 @@
 #include <pxr/imaging/hd/primOriginSchema.h>
 #include <pxr/imaging/hd/selectionsSchema.h>
 
+#include <algorithm>
+
 
 // This class is a filtering scene index that converts the geometries into a bounding box using the extent attribute. 
 // If the extent attribute is not present, we draw nothing, so an extent attribute must exist on all primitives for this mode to be supported correctly.
@@ -54,6 +56,22 @@ namespace
     );
 
     const TfToken extentsHintBoundsToken("extentsHintBounds");
+
+    HdContainerDataSourceHandle _OverlayExtent(
+        const HdContainerDataSourceHandle& primSource,
+        const GfRange3d& extent)
+    {
+        const HdContainerDataSourceHandle extentOverlay
+            = HdRetainedContainerDataSource::New(
+                HdExtentSchemaTokens->extent,
+                HdExtentSchema::Builder()
+                    .SetMin(HdRetainedTypedSampledDataSource<GfVec3d>::New(
+                        extent.GetMin()))
+                    .SetMax(HdRetainedTypedSampledDataSource<GfVec3d>::New(
+                        extent.GetMax()))
+                    .Build());
+        return HdOverlayContainerDataSource::New(extentOverlay, primSource);
+    }
 
     TfTokenVector
     _Concat(const TfTokenVector &a, const TfTokenVector &b)
@@ -363,15 +381,21 @@ BboxSceneIndex::BboxSceneIndex(
     const std::shared_ptr<WireframeColorInterface>& wireframeColorInterface,
     Mode mode,
     PrimPredicate primPredicate,
-    WireframeColorProvider wireframeColorProvider) :
+    WireframeColorProvider wireframeColorProvider,
+    ExtentProvider extentProvider,
+    ChildPrimPathsProvider childPrimPathsProvider,
+    PrimDataSourceProvider primDataSourceProvider) :
     ParentClass(inputSceneIndex), 
     InputSceneIndexUtils(inputSceneIndex),
     _wireframeColorInterface(wireframeColorInterface),
     _mode(mode),
     _primPredicate(std::move(primPredicate)),
-    _wireframeColorProvider(std::move(wireframeColorProvider))
+    _wireframeColorProvider(std::move(wireframeColorProvider)),
+    _extentProvider(std::move(extentProvider)),
+    _childPrimPathsProvider(std::move(childPrimPathsProvider)),
+    _primDataSourceProvider(std::move(primDataSourceProvider))
 {
-    TF_AXIOM(_wireframeColorInterface);
+    TF_AXIOM(_wireframeColorInterface || _wireframeColorProvider);
 }
 
 bool BboxSceneIndex::_ShouldConvert(
@@ -386,6 +410,12 @@ bool BboxSceneIndex::_ShouldConvert(
             || prim.primType == HdPrimTypeTokens->basisCurves;
     }
 
+    // Re-wrap synthetic extentsHint meshes downstream to update Maya's
+    // selection-role color without creating duplicate highlight geometry.
+    if (prim.dataSource->Get(extentsHintBoundsToken)) {
+        return true;
+    }
+
     // Convert only non-renderable prims approved by the data producer.  For
     // MayaUSD, the predicate verifies the composed UsdPrim is a valid model
     // and has an authored extentsHint on that same prim.
@@ -398,13 +428,28 @@ bool BboxSceneIndex::_ShouldConvert(
     }
 
     HdExtentSchema extent = HdExtentSchema::GetFromParent(prim.dataSource);
-    return extent.GetMin() && extent.GetMax();
+    if (extent.GetMin() && extent.GetMax()) {
+        return true;
+    }
+    return _extentProvider && _extentProvider(primPath).has_value();
 }
 
 HdSceneIndexPrim BboxSceneIndex::GetPrim(const SdfPath& primPath) const
 {
     HdSceneIndexPrim prim = GetInputSceneIndex()->GetPrim(primPath);
+    if (!prim.dataSource && _primDataSourceProvider) {
+        prim.dataSource = _primDataSourceProvider(primPath);
+    }
     if (_ShouldConvert(primPath, prim)) {
+        if (_extentProvider) {
+            HdExtentSchema extent = HdExtentSchema::GetFromParent(prim.dataSource);
+            if (!extent.GetMin() || !extent.GetMax()) {
+                if (const auto suppliedExtent = _extentProvider(primPath)) {
+                    prim.dataSource = _OverlayExtent(
+                        prim.dataSource, *suppliedExtent);
+                }
+            }
+        }
         prim.primType = HdPrimTypeTokens->mesh;
         const GfVec4f wireframeColor = _wireframeColorProvider
             ? _wireframeColorProvider(primPath)
@@ -413,6 +458,20 @@ HdSceneIndexPrim BboxSceneIndex::GetPrim(const SdfPath& primPath) const
     }
 
     return prim;
+}
+
+SdfPathVector BboxSceneIndex::GetChildPrimPaths(const SdfPath& primPath) const
+{
+    SdfPathVector result = GetInputSceneIndex()->GetChildPrimPaths(primPath);
+    if (_childPrimPathsProvider) {
+        const SdfPathVector supplied = _childPrimPathsProvider(primPath);
+        for (const SdfPath& path : supplied) {
+            if (std::find(result.begin(), result.end(), path) == result.end()) {
+                result.push_back(path);
+            }
+        }
+    }
+    return result;
 }
 
 void BboxSceneIndex::_PrimsAdded(const HdSceneIndexBase& sender, const HdSceneIndexObserver::AddedPrimEntries& entries)

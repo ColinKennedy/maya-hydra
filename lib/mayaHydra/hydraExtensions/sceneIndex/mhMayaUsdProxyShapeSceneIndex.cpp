@@ -21,6 +21,9 @@
 
 #include <flowViewport/fvpInstruments.h>
 
+#include <pxr/imaging/hd/extentSchema.h>
+#include <pxr/imaging/hd/overlayContainerDataSource.h>
+#include <pxr/imaging/hd/retainedDataSource.h>
 #include <pxr/usd/usdGeom/modelAPI.h>
 
 //mayaHydra headers
@@ -35,11 +38,13 @@ MayaUsdProxyShapeSceneIndex::MayaUsdProxyShapeSceneIndex(
     const HdSceneIndexBaseRefPtr&          sceneIndexChainLastElement,
     const UsdImagingStageSceneIndexRefPtr& usdImagingStageSceneIndex,
     const MObjectHandle&                   dagNodeHandle,
-    const PXR_NS::SdfPath&                 prefix)
+    const PXR_NS::SdfPath&                 prefix,
+    const std::shared_ptr<UsdStageRefPtr>& sharedStage)
     : ParentClass(sceneIndexChainLastElement)
     , InputSceneIndexUtils(sceneIndexChainLastElement)
     , _usdImagingStageSceneIndex(usdImagingStageSceneIndex)
     , _proxyStage(proxyStage)
+    , _sharedStage(sharedStage)
     , _dagNodeHandle(dagNodeHandle)
     , _prefix(prefix)
 {
@@ -70,9 +75,10 @@ MayaUsdProxyShapeSceneIndexRefPtr MayaUsdProxyShapeSceneIndex::New(
     const HdSceneIndexBaseRefPtr&          sceneIndexChainLastElement,
     const UsdImagingStageSceneIndexRefPtr& usdImagingStageSceneIndex,
     const MObjectHandle&                   dagNodeHandle,
-    const PXR_NS::SdfPath&                 prefix)
+    const PXR_NS::SdfPath&                 prefix,
+    const std::shared_ptr<UsdStageRefPtr>& sharedStage)
 {
-    return TfCreateRefPtr(new MayaUsdProxyShapeSceneIndex(proxyStage, sceneIndexChainLastElement, usdImagingStageSceneIndex, dagNodeHandle, prefix));
+    return TfCreateRefPtr(new MayaUsdProxyShapeSceneIndex(proxyStage, sceneIndexChainLastElement, usdImagingStageSceneIndex, dagNodeHandle, prefix, sharedStage));
 }
 
 void MayaUsdProxyShapeSceneIndex::UpdateTime()
@@ -114,6 +120,9 @@ void MayaUsdProxyShapeSceneIndex::_StageSet(const MAYAUSDAPI_NS::ProxyStageSetNo
 void MayaUsdProxyShapeSceneIndex::_StageInvalidate(const MAYAUSDAPI_NS::ProxyStageInvalidateNotice& notice) 
 { 
     _stage.Reset();
+    if (_sharedStage) {
+        _sharedStage->Reset();
+    }
     _usdImagingStageSceneIndex->SetStage(nullptr);
     _populated = false;
     Populate(); 
@@ -141,6 +150,9 @@ void MayaUsdProxyShapeSceneIndex::Populate()
             Fvp::Instruments::instance().set(kNbPopulateCalls, VtValue(_nbPopulateCalls));
             _usdImagingStageSceneIndex->SetStage(stage);
             _stage = stage;
+            if (_sharedStage) {
+                *_sharedStage = stage;
+            }
             // Set the initial time
             UpdateTime();
             _populated = true;
@@ -164,7 +176,39 @@ Ufe::Path MayaUsdProxyShapeSceneIndex::InterpretRprimPath(
 // satisfying HdSceneIndexBase
 HdSceneIndexPrim MayaUsdProxyShapeSceneIndex::GetPrim(const SdfPath& primPath) const
 {
-    return GetInputSceneIndex()->GetPrim(primPath);
+    HdSceneIndexPrim prim = GetInputSceneIndex()->GetPrim(primPath);
+    if (!prim.dataSource || !prim.primType.IsEmpty()
+        || !IsModelWithAuthoredExtentsHint(primPath)) {
+        return prim;
+    }
+
+    HdExtentSchema existingExtent
+        = HdExtentSchema::GetFromParent(prim.dataSource);
+    if (existingExtent.GetMin() && existingExtent.GetMax()) {
+        return prim;
+    }
+
+    VtVec3fArray extentsHint;
+    const UsdPrim primOnStage = _stage->GetPrimAtPath(primPath);
+    if (!UsdGeomModelAPI(primOnStage).GetExtentsHint(&extentsHint)
+        || extentsHint.size() < 2) {
+        return prim;
+    }
+
+    // The first pair is the default-purpose range.  This is the same range
+    // usdview uses for the model's unloaded bounds.
+    const HdContainerDataSourceHandle extentOverlay
+        = HdRetainedContainerDataSource::New(
+            HdExtentSchemaTokens->extent,
+            HdExtentSchema::Builder()
+                .SetMin(HdRetainedTypedSampledDataSource<GfVec3d>::New(
+                    GfVec3d(extentsHint[0])))
+                .SetMax(HdRetainedTypedSampledDataSource<GfVec3d>::New(
+                    GfVec3d(extentsHint[1])))
+                .Build());
+    prim.dataSource = HdOverlayContainerDataSource::New(
+        extentOverlay, prim.dataSource);
+    return prim;
 }
 
 SdfPathVector MayaUsdProxyShapeSceneIndex::GetChildPrimPaths(const SdfPath& primPath) const

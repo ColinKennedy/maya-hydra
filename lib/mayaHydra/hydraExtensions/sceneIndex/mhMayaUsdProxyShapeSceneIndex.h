@@ -70,7 +70,8 @@ public:
         const HdSceneIndexBaseRefPtr&          sceneIndexChainLastElement,
         const UsdImagingStageSceneIndexRefPtr& usdImagingStageSceneIndex,
         const MObjectHandle&                   dagNodeHandle,
-        const PXR_NS::SdfPath&                 prefix
+        const PXR_NS::SdfPath&                 prefix,
+        const std::shared_ptr<UsdStageRefPtr>& sharedStage
     );
 
     // From HdSceneIndexBase
@@ -79,9 +80,10 @@ public:
 
     MayaUsdProxyShapeSceneIndex(const MAYAUSDAPI_NS::ProxyStage&       proxyStage,
                                 const HdSceneIndexBaseRefPtr&          sceneIndexChainLastElement,
-                                const UsdImagingStageSceneIndexRefPtr& usdImagingStageSceneIndex,
-                                const MObjectHandle&                   dagNodeHandle,
-                                const PXR_NS::SdfPath&                 prefix);
+                                 const UsdImagingStageSceneIndexRefPtr& usdImagingStageSceneIndex,
+                                 const MObjectHandle&                   dagNodeHandle,
+                                 const PXR_NS::SdfPath&                 prefix,
+                                 const std::shared_ptr<UsdStageRefPtr>& sharedStage);
 
     virtual ~MayaUsdProxyShapeSceneIndex();
 
@@ -113,6 +115,7 @@ private:
     UsdImagingStageSceneIndexRefPtr _usdImagingStageSceneIndex {nullptr};
     MAYAUSDAPI_NS::ProxyStage       _proxyStage;
     UsdStageRefPtr                  _stage;
+    std::shared_ptr<UsdStageRefPtr> _sharedStage;
     std::atomic<bool>               _populated { false };
     MObjectHandle                   _dagNodeHandle;
     TfNotice::Key                   _stageSetNoticeKey;

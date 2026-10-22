@@ -20,6 +20,7 @@
 
 #include <flowViewport/sceneIndex/fvpRenderIndexProxy.h>
 #include <flowViewport/sceneIndex/fvpPathInterfaceSceneIndex.h>
+#include <flowViewport/sceneIndex/fvpBBoxSceneIndex.h>
 #include <flowViewport/API/interfacesImp/fvpDataProducerSceneIndexInterfaceImp.h>
 #include <flowViewport/fvpUtils.h>
 #include <flowViewport/selection/fvpPathMapper.h>
@@ -28,6 +29,7 @@
 #include <pxr/base/tf/diagnostic.h>
 #include <pxr/imaging/hd/dataSourceTypeDefs.h>
 #include <pxr/imaging/hd/instanceSchema.h>
+#include <pxr/imaging/hd/primOriginSchema.h>
 #include <pxr/imaging/hd/instanceIndicesSchema.h>
 #include <pxr/imaging/hd/instancerTopologySchema.h>
 #include <pxr/imaging/hd/prefixingSceneIndex.h>
@@ -36,9 +38,13 @@
 #include <pxr/imaging/hd/sceneIndexPluginRegistry.h>
 #include <pxr/imaging/hd/selectionSchema.h>
 #include <pxr/imaging/hd/selectionsSchema.h>
+#include <pxr/imaging/hd/xformSchema.h>
 #include <pxr/imaging/hd/renderDelegate.h>
 #include <pxr/usdImaging/usdImaging/usdPrimInfoSchema.h>
 #include <pxr/usd/sdf/path.h>
+#include <pxr/usd/sdf/primSpec.h>
+#include <pxr/usd/usdGeom/modelAPI.h>
+#include <pxr/usd/usdGeom/xformable.h>
 
 #include <mayaUsdAPI/proxyStage.h>
 
@@ -458,8 +464,103 @@ void MayaHydraSceneIndexRegistry::_AddSceneIndexForNode(MObject& dagNode)
     //With this callback you can insert some scene indices which will be applied before the prototype scene indices.
     //This will be done inside Fvp::DataProducerSceneIndexInterfaceImp::get().addUsdStageSceneIndex later
     UsdImagingCreateSceneIndicesInfo createInfo;
+    // Keep unloaded prims in the stage scene index so our extentsHint bounds
+    // scene index can represent them.  Do not enable USD's unloaded draw-mode
+    // bounds here: those would compete with our selectable Maya-colored mesh.
+    createInfo.stageSceneIndexInputArgs = HdRetainedContainerDataSource::New(
+        UsdImagingStageSceneIndexTokens->includeUnloadedPrims,
+        HdRetainedTypedSampledDataSource<bool>::New(true));
         
     auto stage = proxyStage.getUsdStage();
+    auto sharedStage = std::make_shared<UsdStageRefPtr>(stage);
+    createInfo.overridesSceneIndexCallback
+        = [sharedStage](const HdSceneIndexBaseRefPtr& input) {
+            const auto modelWithUnloadedPayload = [sharedStage](const SdfPath& path) {
+                const UsdStageRefPtr stage = *sharedStage;
+                if (!stage) {
+                    return false;
+                }
+                const UsdPrim prim = stage->GetPrimAtPath(path);
+                return prim && prim.IsModel()
+                    && UsdGeomModelAPI(prim)
+                           .GetExtentsHintAttr()
+                           .HasAuthoredValueOpinion()
+                    && (!prim.HasPayload() || !prim.IsLoaded());
+            };
+            const auto authoredExtent = [sharedStage](const SdfPath& path)
+                -> std::optional<GfRange3d> {
+                const UsdStageRefPtr stage = *sharedStage;
+                if (!stage) {
+                    return std::nullopt;
+                }
+                VtVec3fArray hint;
+                const UsdPrim prim = stage->GetPrimAtPath(path);
+                if (!prim || !UsdGeomModelAPI(prim).GetExtentsHint(&hint)
+                    || hint.size() < 2) {
+                    return std::nullopt;
+                }
+                return GfRange3d(GfVec3d(hint[0]), GfVec3d(hint[1]));
+            };
+            const auto childPaths = [sharedStage, modelWithUnloadedPayload](
+                                        const SdfPath& parentPath) {
+                SdfPathVector result;
+                const UsdStageRefPtr stage = *sharedStage;
+                if (!stage) {
+                    return result;
+                }
+                const SdfLayerHandle rootLayer = stage->GetRootLayer();
+                if (parentPath == SdfPath::AbsoluteRootPath()) {
+                    for (const SdfPrimSpecHandle& child : rootLayer->GetRootPrims()) {
+                        if (modelWithUnloadedPayload(child->GetPath())) {
+                            result.push_back(child->GetPath());
+                        }
+                    }
+                } else if (const SdfPrimSpecHandle parentSpec
+                    = rootLayer->GetPrimAtPath(parentPath)) {
+                    for (const SdfPrimSpecHandle& child : parentSpec->GetNameChildren()) {
+                        if (modelWithUnloadedPayload(child->GetPath())) {
+                            result.push_back(child->GetPath());
+                        }
+                    }
+                }
+                return result;
+            };
+            const auto primDataSource = [sharedStage, modelWithUnloadedPayload](
+                                            const SdfPath& path)
+                -> HdContainerDataSourceHandle {
+                const UsdStageRefPtr stage = *sharedStage;
+                if (!stage || !modelWithUnloadedPayload(path)) {
+                    return nullptr;
+                }
+                const UsdPrim prim = stage->GetPrimAtPath(path);
+                GfMatrix4d matrix(1.0);
+                bool resetXformStack = false;
+                UsdGeomXformable(prim).GetLocalTransformation(
+                    &matrix, &resetXformStack);
+                const HdContainerDataSourceHandle xform
+                    = HdXformSchema::Builder()
+                          .SetMatrix(HdRetainedTypedSampledDataSource<GfMatrix4d>::New(matrix))
+                          .SetResetXformStack(HdRetainedTypedSampledDataSource<bool>::New(resetXformStack))
+                          .Build();
+                const HdContainerDataSourceHandle primOrigin
+                    = HdRetainedContainerDataSource::New(
+                        HdPrimOriginSchemaTokens->scenePath,
+                        HdRetainedTypedSampledDataSource<HdPrimOriginSchema::OriginPath>::New(
+                            HdPrimOriginSchema::OriginPath(path)));
+                return HdRetainedContainerDataSource::New(
+                    HdXformSchemaTokens->xform, xform,
+                    HdPrimOriginSchemaTokens->primOrigin, primOrigin);
+            };
+            return Fvp::BboxSceneIndex::New(
+                input,
+                nullptr,
+                Fvp::BboxSceneIndex::Mode::EmptyModelsWithExtents,
+                modelWithUnloadedPayload,
+                [](const SdfPath&) { return GfVec4f(0.0f, 0.016f, 0.376f, 1.0f); },
+                authoredExtent,
+                childPaths,
+                primDataSource);
+        };
     // Check whether the pseudo-root has children
     if (stage && (!stage->GetPseudoRoot().GetChildren().empty())) {
         createInfo.stage = stage;//Add the stage to the creation parameters
@@ -487,7 +588,7 @@ void MayaHydraSceneIndexRegistry::_AddSceneIndexForNode(MObject& dagNode)
     // contains Maya data, it cannot be added by the Flow Viewport API.
     // Pass in the scene index prefix for the proxy shape scene index, so it
     // can register a pick handler.
-    auto mayaUsdProxyShapeSceneIndex = MAYAHYDRA_NS_DEF::MayaUsdProxyShapeSceneIndex::New(proxyStage, finalSceneIndex, stageSceneIndex, MObjectHandle(dagNode), registration->sceneIndexPathPrefix);
+    auto mayaUsdProxyShapeSceneIndex = MAYAHYDRA_NS_DEF::MayaUsdProxyShapeSceneIndex::New(proxyStage, finalSceneIndex, stageSceneIndex, MObjectHandle(dagNode), registration->sceneIndexPathPrefix, sharedStage);
     registration->pluginSceneIndex = mayaUsdProxyShapeSceneIndex;
     registration->interpretRprimPathFn = &(MAYAHYDRA_NS_DEF::MayaUsdProxyShapeSceneIndex::InterpretRprimPath);
     mayaUsdProxyShapeSceneIndex->Populate();

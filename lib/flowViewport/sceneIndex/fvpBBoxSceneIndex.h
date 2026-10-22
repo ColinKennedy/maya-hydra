@@ -23,10 +23,12 @@
 
 //Hydra headers
 #include <pxr/base/tf/declarePtrs.h>
+#include <pxr/base/gf/range3d.h>
 #include <pxr/base/gf/vec4f.h>
 #include <pxr/imaging/hd/filteringSceneIndex.h>
 
 #include <functional>
+#include <optional>
 
 namespace FVP_NS_DEF {
 
@@ -44,6 +46,9 @@ class BboxSceneIndex : public PXR_NS::HdSingleInputFilteringSceneIndexBase
 {
 public:
     using PrimPredicate = std::function<bool(const PXR_NS::SdfPath&)>;
+    using ExtentProvider = std::function<std::optional<PXR_NS::GfRange3d>(const PXR_NS::SdfPath&)>;
+    using ChildPrimPathsProvider = std::function<PXR_NS::SdfPathVector(const PXR_NS::SdfPath&)>;
+    using PrimDataSourceProvider = std::function<PXR_NS::HdContainerDataSourceHandle(const PXR_NS::SdfPath&)>;
     using WireframeColorProvider = std::function<PXR_NS::GfVec4f(const PXR_NS::SdfPath&)>;
 
     enum class Mode {
@@ -60,13 +65,19 @@ public:
         const std::shared_ptr<WireframeColorInterface>& wireframeColorInterface,
         Mode mode = Mode::Geometries,
         PrimPredicate primPredicate = {},
-        WireframeColorProvider wireframeColorProvider = {}){
+        WireframeColorProvider wireframeColorProvider = {},
+        ExtentProvider extentProvider = {},
+        ChildPrimPathsProvider childPrimPathsProvider = {},
+        PrimDataSourceProvider primDataSourceProvider = {}){
         return PXR_NS::TfCreateRefPtr(new BboxSceneIndex(
             inputSceneIndex,
             wireframeColorInterface,
             mode,
             std::move(primPredicate),
-            std::move(wireframeColorProvider)));
+            std::move(wireframeColorProvider),
+            std::move(extentProvider),
+            std::move(childPrimPathsProvider),
+            std::move(primDataSourceProvider)));
     }
 
     // From HdSceneIndexBase
@@ -74,9 +85,7 @@ public:
     PXR_NS::HdSceneIndexPrim GetPrim(const PXR_NS::SdfPath& primPath) const override;
     
     FVP_API
-    PXR_NS::SdfPathVector GetChildPrimPaths(const PXR_NS::SdfPath& primPath) const override{
-        return GetInputSceneIndex()->GetChildPrimPaths(primPath);
-    }
+    PXR_NS::SdfPathVector GetChildPrimPaths(const PXR_NS::SdfPath& primPath) const override;
     
     FVP_API
     ~BboxSceneIndex() override = default;
@@ -92,7 +101,10 @@ protected:
         const std::shared_ptr<WireframeColorInterface>& wireframeColorInterface,
         Mode mode,
         PrimPredicate primPredicate,
-        WireframeColorProvider wireframeColorProvider);
+        WireframeColorProvider wireframeColorProvider,
+        ExtentProvider extentProvider,
+        ChildPrimPathsProvider childPrimPathsProvider,
+        PrimDataSourceProvider primDataSourceProvider);
 
     bool _ShouldConvert(
         const PXR_NS::SdfPath& primPath,
@@ -122,6 +134,9 @@ protected:
     Mode _mode;
     PrimPredicate _primPredicate;
     WireframeColorProvider _wireframeColorProvider;
+    ExtentProvider _extentProvider;
+    ChildPrimPathsProvider _childPrimPathsProvider;
+    PrimDataSourceProvider _primDataSourceProvider;
 };
 
 }//end of namespace FVP_NS_DEF

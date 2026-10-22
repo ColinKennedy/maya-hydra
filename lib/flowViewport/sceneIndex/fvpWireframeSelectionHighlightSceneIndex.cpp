@@ -65,6 +65,12 @@ const HdDataSourceLocator primvarsOverrideWireframeColorLocator(
         HdPrimvarsSchema::GetDefaultLocator().Append(_primVarsTokens->overrideWireframeColor));
 
 const std::string selectionHighlightMirrorTag = "_SelectionHighlight";
+const TfToken extentsHintBoundsToken("extentsHintBounds");
+
+bool _IsExtentsHintBounds(const HdSceneIndexPrim& prim)
+{
+    return prim.dataSource && prim.dataSource->Get(extentsHintBoundsToken);
+}
 
 SdfPath _GetSelectionHighlightMirrorPathFromOriginal(const SdfPath& originalPath)
 {
@@ -336,7 +342,7 @@ WireframeSelectionHighlightSceneIndex(
         if (prim.primType == HdPrimTypeTokens->instancer) {
             _CreateSelectionHighlightsForInstancer(prim, primPath);
         }
-        else if (prim.primType == HdPrimTypeTokens->mesh) {
+        else if (prim.primType == HdPrimTypeTokens->mesh && !_IsExtentsHintBounds(prim)) {
             _CreateSelectionHighlightsForMesh(prim, primPath);
         }
 #if PXR_VERSION >= 2403
@@ -682,7 +688,7 @@ WireframeSelectionHighlightSceneIndex::_PrimsAdded(
         if (prim.primType == HdPrimTypeTokens->instancer) {
             _CreateSelectionHighlightsForInstancer(prim, entry.primPath);
         }
-        else if (prim.primType == HdPrimTypeTokens->mesh) {
+        else if (prim.primType == HdPrimTypeTokens->mesh && !_IsExtentsHintBounds(prim)) {
             _CreateSelectionHighlightsForMesh(prim, entry.primPath);
         }
 #if PXR_VERSION >= 2403
@@ -778,7 +784,8 @@ WireframeSelectionHighlightSceneIndex::_PrimsDirtied(
             // same thing for meshes)
             auto operation = [&](const SdfPath& primPath, const HdSceneIndexPrim& prim) -> bool {
                 if ((prim.primType == HdPrimTypeTokens->instancer && !_IsPrototype(prim))
-                    || prim.primType == HdPrimTypeTokens->mesh) {
+                    || (prim.primType == HdPrimTypeTokens->mesh
+                        && !_IsExtentsHintBounds(prim))) {
                     if (isSelected) {
                         selectionHighlightUsersToAdd.push_back({primPath,entry.primPath});
                     } else {

@@ -26,6 +26,8 @@
 #include <pxr/base/gf/vec4f.h>
 #include <pxr/imaging/hd/filteringSceneIndex.h>
 
+#include <functional>
+
 namespace FVP_NS_DEF {
 
 class BboxSceneIndex;
@@ -41,12 +43,30 @@ class BboxSceneIndex : public PXR_NS::HdSingleInputFilteringSceneIndexBase
     , public Fvp::InputSceneIndexUtils<BboxSceneIndex>
 {
 public:
+    using PrimPredicate = std::function<bool(const PXR_NS::SdfPath&)>;
+    using WireframeColorProvider = std::function<PXR_NS::GfVec4f(const PXR_NS::SdfPath&)>;
+
+    enum class Mode {
+        Geometries,
+        EmptyModelsWithExtents
+    };
+
     using ParentClass = PXR_NS::HdSingleInputFilteringSceneIndexBase;
     using PXR_NS::HdSingleInputFilteringSceneIndexBase::_GetInputSceneIndex;
 
     FVP_API
-    static BboxSceneIndexRefPtr New(const PXR_NS::HdSceneIndexBaseRefPtr& inputSceneIndex, const std::shared_ptr<WireframeColorInterface>& wireframeColorInterface){
-        return PXR_NS::TfCreateRefPtr(new BboxSceneIndex(inputSceneIndex, wireframeColorInterface));
+    static BboxSceneIndexRefPtr New(
+        const PXR_NS::HdSceneIndexBaseRefPtr& inputSceneIndex,
+        const std::shared_ptr<WireframeColorInterface>& wireframeColorInterface,
+        Mode mode = Mode::Geometries,
+        PrimPredicate primPredicate = {},
+        WireframeColorProvider wireframeColorProvider = {}){
+        return PXR_NS::TfCreateRefPtr(new BboxSceneIndex(
+            inputSceneIndex,
+            wireframeColorInterface,
+            mode,
+            std::move(primPredicate),
+            std::move(wireframeColorProvider)));
     }
 
     // From HdSceneIndexBase
@@ -67,7 +87,16 @@ public:
     }
 
 protected:
-    BboxSceneIndex(const PXR_NS::HdSceneIndexBaseRefPtr& inputSceneIndex, const std::shared_ptr<WireframeColorInterface>&  wireframeColorInterface);
+    BboxSceneIndex(
+        const PXR_NS::HdSceneIndexBaseRefPtr& inputSceneIndex,
+        const std::shared_ptr<WireframeColorInterface>& wireframeColorInterface,
+        Mode mode,
+        PrimPredicate primPredicate,
+        WireframeColorProvider wireframeColorProvider);
+
+    bool _ShouldConvert(
+        const PXR_NS::SdfPath& primPath,
+        const PXR_NS::HdSceneIndexPrim& prim) const;
 
     //From HdSingleInputFilteringSceneIndexBase
     void _PrimsAdded(const PXR_NS::HdSceneIndexBase& sender, const PXR_NS::HdSceneIndexObserver::AddedPrimEntries& entries) override;
@@ -75,10 +104,9 @@ protected:
         if (!_IsObserved())return;
         _SendPrimsRemoved(entries);
     }
-    void _PrimsDirtied(const PXR_NS::HdSceneIndexBase& sender, const PXR_NS::HdSceneIndexObserver::DirtiedPrimEntries& entries)override{
-        if (!_IsObserved())return;
-        _SendPrimsDirtied(entries);
-    }
+    void _PrimsDirtied(
+        const PXR_NS::HdSceneIndexBase& sender,
+        const PXR_NS::HdSceneIndexObserver::DirtiedPrimEntries& entries) override;
 
     bool _isExcluded(const PXR_NS::SdfPath& sceneRoot) const { 
         for (const auto& excluded : _excludedSceneRoots) {
@@ -91,6 +119,9 @@ protected:
 
     std::set<PXR_NS::SdfPath> _excludedSceneRoots;
     std::shared_ptr<WireframeColorInterface> _wireframeColorInterface;
+    Mode _mode;
+    PrimPredicate _primPredicate;
+    WireframeColorProvider _wireframeColorProvider;
 };
 
 }//end of namespace FVP_NS_DEF

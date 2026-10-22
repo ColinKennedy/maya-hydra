@@ -21,6 +21,8 @@
 
 #include <flowViewport/fvpInstruments.h>
 
+#include <pxr/usd/usdGeom/modelAPI.h>
+
 //mayaHydra headers
 #include "ufeExtensions/Global.h"
 
@@ -80,6 +82,19 @@ void MayaUsdProxyShapeSceneIndex::UpdateTime()
     }
 }
 
+bool MayaUsdProxyShapeSceneIndex::IsModelWithAuthoredExtentsHint(
+    const SdfPath& primPath) const
+{
+    if (!_stage) {
+        return false;
+    }
+
+    const UsdPrim prim = _stage->GetPrimAtPath(primPath);
+    return prim && prim.IsModel()
+        && UsdGeomModelAPI(prim).GetExtentsHintAttr().HasAuthoredValueOpinion()
+        && (!prim.HasPayload() || !prim.IsLoaded());
+}
+
 void MayaUsdProxyShapeSceneIndex::_StageSet(const MAYAUSDAPI_NS::ProxyStageSetNotice& notice) 
 { 
     _populated = false;
@@ -98,6 +113,7 @@ void MayaUsdProxyShapeSceneIndex::_StageSet(const MAYAUSDAPI_NS::ProxyStageSetNo
 // In these cases we set the stage to null and start over.
 void MayaUsdProxyShapeSceneIndex::_StageInvalidate(const MAYAUSDAPI_NS::ProxyStageInvalidateNotice& notice) 
 { 
+    _stage.Reset();
     _usdImagingStageSceneIndex->SetStage(nullptr);
     _populated = false;
     Populate(); 
@@ -124,6 +140,7 @@ void MayaUsdProxyShapeSceneIndex::Populate()
             ++_nbPopulateCalls;
             Fvp::Instruments::instance().set(kNbPopulateCalls, VtValue(_nbPopulateCalls));
             _usdImagingStageSceneIndex->SetStage(stage);
+            _stage = stage;
             // Set the initial time
             UpdateTime();
             _populated = true;

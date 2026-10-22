@@ -31,6 +31,7 @@
 #include <pxr/usdImaging/usdImaging/stageSceneIndex.h>
 #include <pxr/usdImaging/usdImaging/sceneIndices.h>// In USD 23.11+
 #include <pxr/imaging/hd/filteringSceneIndex.h>
+#include <pxr/usd/usd/stage.h>
 
 //Maya headers
 #include <maya/MObjectHandle.h>
@@ -86,6 +87,8 @@ public:
 
     void Populate();
     void UpdateTime();
+    MAYAHYDRALIB_API
+    bool IsModelWithAuthoredExtentsHint(const SdfPath& primPath) const;
     static Ufe::Path InterpretRprimPath(const HdSceneIndexBaseRefPtr& sceneIndex,const SdfPath& path);
 
     //From HdSingleInputFilteringSceneIndexBase
@@ -109,6 +112,7 @@ private:
 
     UsdImagingStageSceneIndexRefPtr _usdImagingStageSceneIndex {nullptr};
     MAYAUSDAPI_NS::ProxyStage       _proxyStage;
+    UsdStageRefPtr                  _stage;
     std::atomic<bool>               _populated { false };
     MObjectHandle                   _dagNodeHandle;
     TfNotice::Key                   _stageSetNoticeKey;

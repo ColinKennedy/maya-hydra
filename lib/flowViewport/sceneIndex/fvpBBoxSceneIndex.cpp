@@ -20,10 +20,10 @@
 
 //USD/Hydra headers
 #include <pxr/base/gf/bbox3d.h>
-#include <pxr/usdImaging/usdImaging/modelSchema.h>
 #include <pxr/usdImaging/usdImaging/usdPrimInfoSchema.h>
 #include <pxr/imaging/hd/primvarsSchema.h>
 #include <pxr/imaging/hd/meshSchema.h>
+#include <pxr/imaging/hd/meshTopologySchema.h>
 #include <pxr/imaging/hd/tokens.h>
 #include <pxr/imaging/hd/overlayContainerDataSource.h>
 #include <pxr/imaging/hd/retainedDataSource.h>
@@ -36,6 +36,7 @@
 #include <pxr/imaging/hd/basisCurvesTopologySchema.h>
 #include <pxr/imaging/hd/basisCurvesSchema.h>
 #include <pxr/imaging/hd/primOriginSchema.h>
+#include <pxr/imaging/hd/selectionsSchema.h>
 
 
 // This class is a filtering scene index that converts the geometries into a bounding box using the extent attribute. 
@@ -47,6 +48,13 @@ PXR_NAMESPACE_USING_DIRECTIVE
 
 namespace
 {
+    TF_DEFINE_PRIVATE_TOKENS(
+        _primvarsTokens,
+        (overrideWireframeColor)
+    );
+
+    const TfToken extentsHintBoundsToken("extentsHintBounds");
+
     TfTokenVector
     _Concat(const TfTokenVector &a, const TfTokenVector &b)
     {
@@ -67,7 +75,7 @@ namespace
     public:
 
         TfTokenVector GetNames() override {
-            return {HdTokens->displayColor};
+            return {HdTokens->displayColor, _primvarsTokens->overrideWireframeColor};
         }
 
         HdDataSourceBaseHandle Get(const TfToken &name) override {
@@ -79,6 +87,13 @@ namespace
                                                 HdPrimvarSchemaTokens->constant,
                                                 HdPrimvarSchemaTokens->color);
                 return src;
+            }
+            if (name == _primvarsTokens->overrideWireframeColor) {
+                return Fvp::PrimvarDataSource::New(
+                    HdRetainedTypedSampledDataSource<VtVec4fArray>::New(
+                        VtVec4fArray{_wireframeColor}),
+                    HdPrimvarSchemaTokens->constant,
+                    HdPrimvarSchemaTokens->color);
             }
             return nullptr;
         }
@@ -136,6 +151,9 @@ namespace
                         .SetCullStyle(
                             HdRetainedTypedSampledDataSource<TfToken>::New(
                                 HdCullStyleTokens->nothing))//No culling
+                        .SetReprSelector(
+                            HdRetainedTypedSampledDataSource<VtArray<TfToken>>::New(
+                                {HdReprTokens->wire, TfToken(), TfToken()}))
                         .Build();
                 return src;
             }
@@ -262,36 +280,22 @@ namespace
         }
     };
 
-    HdContainerDataSourceHandle
-    _ComputeBoundsTopology()
+    HdContainerDataSourceHandle _ComputeBoundsTopology()
     {
-        //Is for a bounding box
-        // Segments: CCW bottom face starting at (-x, -y, -z)
-        //           CCW top face starting at (-x, -y, z)
-        //           CCW vertical edges, starting at (-x, -y)
-        const VtIntArray curveIndices{
-                /* bottom face */ 0, 4, 4, 6, 6, 2, 2, 0,
-                /* top face */    1, 5, 5, 7, 7, 3, 3, 1,
-                /* edge pairs */  0, 1, 4, 5, 6, 7, 2, 3 };
-        const VtIntArray curveVertexCounts{
-                static_cast<int>(curveIndices.size()) };
-    
-        return HdBasisCurvesTopologySchema::Builder()
-            .SetCurveVertexCounts(
-                    HdRetainedTypedSampledDataSource<VtIntArray>::New(
-                        curveVertexCounts))
-            .SetCurveIndices(
-                HdRetainedTypedSampledDataSource<VtIntArray>::New(
-                    curveIndices))
-            .SetBasis(
-                HdRetainedTypedSampledDataSource<TfToken>::New(
-                    HdTokens->bezier))
-            .SetType(
-                HdRetainedTypedSampledDataSource<TfToken>::New(
-                    HdTokens->linear))
-            .SetWrap(
-                HdRetainedTypedSampledDataSource<TfToken>::New(
-                    HdTokens->segmented))
+        const VtIntArray faceVertexCounts{4, 4, 4, 4, 4, 4};
+        const VtIntArray faceVertexIndices{
+            0, 4, 6, 2,
+            1, 3, 7, 5,
+            0, 1, 5, 4,
+            2, 6, 7, 3,
+            0, 2, 3, 1,
+            4, 5, 7, 6};
+
+        return HdMeshTopologySchema::Builder()
+            .SetFaceVertexCounts(
+                HdRetainedTypedSampledDataSource<VtIntArray>::New(faceVertexCounts))
+            .SetFaceVertexIndices(
+                HdRetainedTypedSampledDataSource<VtIntArray>::New(faceVertexIndices))
             .Build();
     }
 
@@ -310,19 +314,22 @@ namespace
         TfTokenVector GetNames() override {
             static const TfTokenVector result = _Concat(
                 _PrimDataSource::GetNames(),
-                { HdBasisCurvesSchemaTokens->basisCurves,
+                { HdMeshSchemaTokens->mesh,
                   HdPrimvarsSchemaTokens->primvars,
-                  HdExtentSchemaTokens->extent });
+                  HdExtentSchemaTokens->extent,
+                  extentsHintBoundsToken });
             return result;
         }
 
         HdDataSourceBaseHandle Get(const TfToken &name) override {
-            if (name == HdBasisCurvesSchemaTokens->basisCurves) {
-                static const HdDataSourceBaseHandle basisCurvesSrc =
-                    HdBasisCurvesSchema::Builder()
+            if (name == HdMeshSchemaTokens->mesh) {
+                static const HdDataSourceBaseHandle meshSrc =
+                    HdMeshSchema::Builder()
                     .SetTopology(_ComputeBoundsTopology())
+                    .SetDoubleSided(
+                        HdRetainedTypedSampledDataSource<bool>::New(true))
                     .Build();
-                return basisCurvesSrc;
+                return meshSrc;
             }
             if (name == HdPrimvarsSchemaTokens->primvars) {
                 return _BoundsPrimvarsDataSource::New(_primSource, _wireframeColor);
@@ -332,6 +339,9 @@ namespace
                     return _primSource->Get(name);
                 }
                 return nullptr;
+            }
+            if (name == extentsHintBoundsToken) {
+                return HdRetainedTypedSampledDataSource<bool>::New(true);
             }
             return _PrimDataSource::Get(name);
         }
@@ -348,20 +358,57 @@ namespace
     };
 }
 
-BboxSceneIndex::BboxSceneIndex(const HdSceneIndexBaseRefPtr& inputSceneIndex, const std::shared_ptr<WireframeColorInterface>& wireframeColorInterface) : 
+BboxSceneIndex::BboxSceneIndex(
+    const HdSceneIndexBaseRefPtr& inputSceneIndex,
+    const std::shared_ptr<WireframeColorInterface>& wireframeColorInterface,
+    Mode mode,
+    PrimPredicate primPredicate,
+    WireframeColorProvider wireframeColorProvider) :
     ParentClass(inputSceneIndex), 
     InputSceneIndexUtils(inputSceneIndex),
-    _wireframeColorInterface(wireframeColorInterface)
+    _wireframeColorInterface(wireframeColorInterface),
+    _mode(mode),
+    _primPredicate(std::move(primPredicate)),
+    _wireframeColorProvider(std::move(wireframeColorProvider))
 {
     TF_AXIOM(_wireframeColorInterface);
+}
+
+bool BboxSceneIndex::_ShouldConvert(
+    const SdfPath& primPath, const HdSceneIndexPrim& prim) const
+{
+    if (!prim.dataSource || _isExcluded(primPath)) {
+        return false;
+    }
+
+    if (_mode == Mode::Geometries) {
+        return prim.primType == HdPrimTypeTokens->mesh
+            || prim.primType == HdPrimTypeTokens->basisCurves;
+    }
+
+    // Convert only non-renderable prims approved by the data producer.  For
+    // MayaUSD, the predicate verifies the composed UsdPrim is a valid model
+    // and has an authored extentsHint on that same prim.
+    if (!prim.primType.IsEmpty()) {
+        return false;
+    }
+
+    if (!_primPredicate || !_primPredicate(primPath)) {
+        return false;
+    }
+
+    HdExtentSchema extent = HdExtentSchema::GetFromParent(prim.dataSource);
+    return extent.GetMin() && extent.GetMax();
 }
 
 HdSceneIndexPrim BboxSceneIndex::GetPrim(const SdfPath& primPath) const
 {
     HdSceneIndexPrim prim = GetInputSceneIndex()->GetPrim(primPath);
-    if (prim.dataSource && ! _isExcluded(primPath) && ((prim.primType == HdPrimTypeTokens->mesh) || (prim.primType == HdPrimTypeTokens->basisCurves)) ){
-        prim.primType   = HdPrimTypeTokens->basisCurves;//Convert to basisCurve for displaying a bounding box
-        const GfVec4f wireframeColor = _wireframeColorInterface->getWireframeColor(primPath);
+    if (_ShouldConvert(primPath, prim)) {
+        prim.primType = HdPrimTypeTokens->mesh;
+        const GfVec4f wireframeColor = _wireframeColorProvider
+            ? _wireframeColorProvider(primPath)
+            : _wireframeColorInterface->getWireframeColor(primPath);
         prim.dataSource = _BoundsPrimDataSource::New(prim.dataSource, wireframeColor);
     }
 
@@ -376,14 +423,42 @@ void BboxSceneIndex::_PrimsAdded(const HdSceneIndexBase& sender, const HdSceneIn
     for (const HdSceneIndexObserver::AddedPrimEntry &entry : entries) {
         const SdfPath &path = entry.primPath;
         HdSceneIndexPrim prim = GetInputSceneIndex()->GetPrim(path);
-        if (prim.primType == HdPrimTypeTokens->mesh){
-            newEntries.push_back({path, HdPrimTypeTokens->basisCurves});//Convert meshes to basisCurve to display a bounding box
+        if (_ShouldConvert(path, prim)) {
+            newEntries.push_back({path, HdPrimTypeTokens->mesh});
         }else{
             newEntries.push_back(entry);
         }
     }
 
     _SendPrimsAdded(newEntries);
+}
+
+void BboxSceneIndex::_PrimsDirtied(
+    const HdSceneIndexBase& sender,
+    const HdSceneIndexObserver::DirtiedPrimEntries& entries)
+{
+    if (!_IsObserved()) {
+        return;
+    }
+
+    HdSceneIndexObserver::DirtiedPrimEntries translatedEntries;
+    translatedEntries.reserve(entries.size());
+    for (const auto& entry : entries) {
+        HdDataSourceLocatorSet dirtyLocators = entry.dirtyLocators;
+        if (dirtyLocators.Intersects(HdSelectionsSchema::GetDefaultLocator())) {
+            const HdSceneIndexPrim prim = GetInputSceneIndex()->GetPrim(entry.primPath);
+            if (_ShouldConvert(entry.primPath, prim)) {
+                dirtyLocators.insert(
+                    HdPrimvarsSchema::GetDefaultLocator().Append(HdTokens->displayColor));
+                dirtyLocators.insert(
+                    HdPrimvarsSchema::GetDefaultLocator().Append(
+                        _primvarsTokens->overrideWireframeColor));
+            }
+        }
+        translatedEntries.emplace_back(entry.primPath, std::move(dirtyLocators));
+    }
+
+    _SendPrimsDirtied(translatedEntries);
 }
 
 }//end of namespace FVP_NS_DEF

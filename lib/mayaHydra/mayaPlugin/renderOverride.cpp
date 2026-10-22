@@ -28,6 +28,7 @@
 
 #include <mayaHydraLib/mayaHydraLibInterface.h>
 #include <mayaHydraLib/sceneIndex/registration.h>
+#include <mayaHydraLib/sceneIndex/mhMayaUsdProxyShapeSceneIndex.h>
 #include <mayaHydraLib/pick/mhPickHandler.h>
 #include <mayaHydraLib/pick/mhPickHandlerRegistry.h>
 #include <mayaHydraLib/hydraUtils.h>
@@ -1224,6 +1225,52 @@ void MtohRenderOverride::_CreateSceneIndicesChainAfterMergingSceneIndex(const MH
     if (! _wireframeColorInterfaceImp){
         _wireframeColorInterfaceImp = std::make_shared<MAYAHYDRA_NS_DEF::MhWireframeColorInterfaceImp>(_selection, _leadObjectPathTracker);
     }
+
+    // Display authored USD extentsHint values for non-renderable model prims.
+    // The generated basis curves preserve primOrigin, so Maya Hydra's normal
+    // click and marquee picking resolve back to the corresponding UFE prim.
+    auto extentsHintBboxSceneIndex = Fvp::BboxSceneIndex::New(
+        _lastFilteringSceneIndexBeforeCustomFiltering,
+        _wireframeColorInterfaceImp,
+        Fvp::BboxSceneIndex::Mode::EmptyModelsWithExtents,
+        [this](const SdfPath& primPath) {
+            if (!_sceneIndexRegistry) {
+                return false;
+            }
+
+            const auto registration =
+                _sceneIndexRegistry->GetSceneIndexRegistrationForRprim(primPath);
+            if (!registration) {
+                return false;
+            }
+
+            const auto proxySceneIndex = TfDynamic_cast<
+                MayaUsdProxyShapeSceneIndexRefPtr>(registration->pluginSceneIndex);
+            if (!proxySceneIndex) {
+                return false;
+            }
+
+            const SdfPath usdPath = primPath.ReplacePrefix(
+                registration->sceneIndexPathPrefix,
+                SdfPath::AbsoluteRootPath());
+            return proxySceneIndex->IsModelWithAuthoredExtentsHint(usdPath);
+        },
+        [this](const SdfPath& primPath) {
+            const auto preferenceColor = [](const TfToken& token) {
+                GfVec4f color(1.0f);
+                Fvp::ColorPreferences::getInstance().getColor(token, color);
+                return color;
+            };
+            if (!_selection->IsFullySelected(primPath)) {
+                return preferenceColor(FvpColorPreferencesTokens->polymeshDormant);
+            }
+            return preferenceColor(
+                _leadObjectPathTracker->isLeadObjectPrim(primPath)
+                    ? FvpColorPreferencesTokens->wireframeSelection
+                    : FvpColorPreferencesTokens->wireframeSelectionSecondary);
+        });
+    extentsHintBboxSceneIndex->addExcludedSceneRoot(MAYA_NATIVE_ROOT);
+    _lastFilteringSceneIndexBeforeCustomFiltering = extentsHintBboxSceneIndex;
     
     //Are we using Bounding Box display style ?
     if (currentDisplayStyle & MHWRender::MFrameContext::kBoundingBox){

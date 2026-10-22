@@ -25,6 +25,7 @@
 
 // Flow Viewport Toolkit headers.
 #include "flowViewport/sceneIndex/fvpSceneIndexUtils.h"
+#include "flowViewport/sceneIndex/fvpBBoxSceneIndex.h"
 
 //Usd/Hydra headers
 #include <pxr/base/tf/declarePtrs.h>
@@ -71,7 +72,8 @@ public:
         const UsdImagingStageSceneIndexRefPtr& usdImagingStageSceneIndex,
         const MObjectHandle&                   dagNodeHandle,
         const PXR_NS::SdfPath&                 prefix,
-        const std::shared_ptr<UsdStageRefPtr>& sharedStage
+        const std::shared_ptr<UsdStageRefPtr>& sharedStage,
+        const Fvp::BboxSceneIndexRefPtr&       extentsHintSceneIndex
     );
 
     // From HdSceneIndexBase
@@ -83,7 +85,8 @@ public:
                                  const UsdImagingStageSceneIndexRefPtr& usdImagingStageSceneIndex,
                                  const MObjectHandle&                   dagNodeHandle,
                                  const PXR_NS::SdfPath&                 prefix,
-                                 const std::shared_ptr<UsdStageRefPtr>& sharedStage);
+                                 const std::shared_ptr<UsdStageRefPtr>& sharedStage,
+                                 const Fvp::BboxSceneIndexRefPtr&       extentsHintSceneIndex);
 
     virtual ~MayaUsdProxyShapeSceneIndex();
 
@@ -109,6 +112,7 @@ private:
     void _StageSet(const MAYAUSDAPI_NS::ProxyStageSetNotice& notice);
     void _StageInvalidate(const MAYAUSDAPI_NS::ProxyStageInvalidateNotice& notice);
     void _PopulateAndApplyPendingChanges();
+    static void _PopulateOnIdle(void* clientData);
 
 private:
 
@@ -116,7 +120,9 @@ private:
     MAYAUSDAPI_NS::ProxyStage       _proxyStage;
     UsdStageRefPtr                  _stage;
     std::shared_ptr<UsdStageRefPtr> _sharedStage;
+    Fvp::BboxSceneIndexRefPtr       _extentsHintSceneIndex;
     std::atomic<bool>               _populated { false };
+    std::atomic<bool>               _populateOnIdlePending { false };
     MObjectHandle                   _dagNodeHandle;
     TfNotice::Key                   _stageSetNoticeKey;
     TfNotice::Key                   _stageInvalidateNoticeKey;

@@ -95,6 +95,12 @@ public:
         _excludedSceneRoots.emplace(sceneRoot);
     }
 
+    /// Recompute externally supplied synthetic prims and emit the required
+    /// remove/add notifications.  Call with false before the scene index is
+    /// attached to establish the initial cache without notifications.
+    FVP_API
+    void refreshSyntheticPrims(bool sendNotifications = true);
+
 protected:
     BboxSceneIndex(
         const PXR_NS::HdSceneIndexBaseRefPtr& inputSceneIndex,
@@ -137,6 +143,7 @@ protected:
     ExtentProvider _extentProvider;
     ChildPrimPathsProvider _childPrimPathsProvider;
     PrimDataSourceProvider _primDataSourceProvider;
+    std::set<PXR_NS::SdfPath> _syntheticPrimPaths;
 };
 
 }//end of namespace FVP_NS_DEF

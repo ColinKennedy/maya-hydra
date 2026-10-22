@@ -473,8 +473,10 @@ void MayaHydraSceneIndexRegistry::_AddSceneIndexForNode(MObject& dagNode)
         
     auto stage = proxyStage.getUsdStage();
     auto sharedStage = std::make_shared<UsdStageRefPtr>(stage);
+    auto extentsHintSceneIndex
+        = std::make_shared<Fvp::BboxSceneIndexRefPtr>();
     createInfo.overridesSceneIndexCallback
-        = [sharedStage](const HdSceneIndexBaseRefPtr& input) {
+        = [sharedStage, extentsHintSceneIndex](const HdSceneIndexBaseRefPtr& input) {
             const auto modelWithUnloadedPayload = [sharedStage](const SdfPath& path) {
                 const UsdStageRefPtr stage = *sharedStage;
                 if (!stage) {
@@ -551,7 +553,7 @@ void MayaHydraSceneIndexRegistry::_AddSceneIndexForNode(MObject& dagNode)
                     HdXformSchemaTokens->xform, xform,
                     HdPrimOriginSchemaTokens->primOrigin, primOrigin);
             };
-            return Fvp::BboxSceneIndex::New(
+            *extentsHintSceneIndex = Fvp::BboxSceneIndex::New(
                 input,
                 nullptr,
                 Fvp::BboxSceneIndex::Mode::EmptyModelsWithExtents,
@@ -560,6 +562,7 @@ void MayaHydraSceneIndexRegistry::_AddSceneIndexForNode(MObject& dagNode)
                 authoredExtent,
                 childPaths,
                 primDataSource);
+            return *extentsHintSceneIndex;
         };
     // Check whether the pseudo-root has children
     if (stage && (!stage->GetPseudoRoot().GetChildren().empty())) {
@@ -588,7 +591,10 @@ void MayaHydraSceneIndexRegistry::_AddSceneIndexForNode(MObject& dagNode)
     // contains Maya data, it cannot be added by the Flow Viewport API.
     // Pass in the scene index prefix for the proxy shape scene index, so it
     // can register a pick handler.
-    auto mayaUsdProxyShapeSceneIndex = MAYAHYDRA_NS_DEF::MayaUsdProxyShapeSceneIndex::New(proxyStage, finalSceneIndex, stageSceneIndex, MObjectHandle(dagNode), registration->sceneIndexPathPrefix, sharedStage);
+    if (*extentsHintSceneIndex) {
+        (*extentsHintSceneIndex)->refreshSyntheticPrims(false);
+    }
+    auto mayaUsdProxyShapeSceneIndex = MAYAHYDRA_NS_DEF::MayaUsdProxyShapeSceneIndex::New(proxyStage, finalSceneIndex, stageSceneIndex, MObjectHandle(dagNode), registration->sceneIndexPathPrefix, sharedStage, *extentsHintSceneIndex);
     registration->pluginSceneIndex = mayaUsdProxyShapeSceneIndex;
     registration->interpretRprimPathFn = &(MAYAHYDRA_NS_DEF::MayaUsdProxyShapeSceneIndex::InterpretRprimPath);
     mayaUsdProxyShapeSceneIndex->Populate();

@@ -26,6 +26,8 @@
 #include <pxr/imaging/hd/retainedDataSource.h>
 #include <pxr/usd/usdGeom/modelAPI.h>
 
+#include <maya/MGlobal.h>
+
 //mayaHydra headers
 #include "ufeExtensions/Global.h"
 
@@ -39,12 +41,14 @@ MayaUsdProxyShapeSceneIndex::MayaUsdProxyShapeSceneIndex(
     const UsdImagingStageSceneIndexRefPtr& usdImagingStageSceneIndex,
     const MObjectHandle&                   dagNodeHandle,
     const PXR_NS::SdfPath&                 prefix,
-    const std::shared_ptr<UsdStageRefPtr>& sharedStage)
+    const std::shared_ptr<UsdStageRefPtr>& sharedStage,
+    const Fvp::BboxSceneIndexRefPtr&       extentsHintSceneIndex)
     : ParentClass(sceneIndexChainLastElement)
     , InputSceneIndexUtils(sceneIndexChainLastElement)
     , _usdImagingStageSceneIndex(usdImagingStageSceneIndex)
     , _proxyStage(proxyStage)
     , _sharedStage(sharedStage)
+    , _extentsHintSceneIndex(extentsHintSceneIndex)
     , _dagNodeHandle(dagNodeHandle)
     , _prefix(prefix)
 {
@@ -76,9 +80,12 @@ MayaUsdProxyShapeSceneIndexRefPtr MayaUsdProxyShapeSceneIndex::New(
     const UsdImagingStageSceneIndexRefPtr& usdImagingStageSceneIndex,
     const MObjectHandle&                   dagNodeHandle,
     const PXR_NS::SdfPath&                 prefix,
-    const std::shared_ptr<UsdStageRefPtr>& sharedStage)
+    const std::shared_ptr<UsdStageRefPtr>& sharedStage,
+    const Fvp::BboxSceneIndexRefPtr&       extentsHintSceneIndex)
 {
-    return TfCreateRefPtr(new MayaUsdProxyShapeSceneIndex(proxyStage, sceneIndexChainLastElement, usdImagingStageSceneIndex, dagNodeHandle, prefix, sharedStage));
+    return TfCreateRefPtr(new MayaUsdProxyShapeSceneIndex(
+        proxyStage, sceneIndexChainLastElement, usdImagingStageSceneIndex,
+        dagNodeHandle, prefix, sharedStage, extentsHintSceneIndex));
 }
 
 void MayaUsdProxyShapeSceneIndex::UpdateTime()
@@ -123,9 +130,35 @@ void MayaUsdProxyShapeSceneIndex::_StageInvalidate(const MAYAUSDAPI_NS::ProxySta
     if (_sharedStage) {
         _sharedStage->Reset();
     }
+    if (_extentsHintSceneIndex) {
+        _extentsHintSceneIndex->refreshSyntheticPrims();
+    }
     _usdImagingStageSceneIndex->SetStage(nullptr);
     _populated = false;
-    Populate(); 
+
+    // MayaUSD sends this notice from setDependentsDirty(), before dirty
+    // propagation completes and outStageData can compute the replacement
+    // stage. Defer acquisition until Maya reaches its idle boundary.
+    if (!_populateOnIdlePending.exchange(true)) {
+        auto* self = new MayaUsdProxyShapeSceneIndexRefPtr(this);
+        const MStatus status = MGlobal::executeTaskOnIdle(
+            &_PopulateOnIdle, self, MGlobal::kHighIdlePriority);
+        if (!status) {
+            _populateOnIdlePending = false;
+            delete self;
+        }
+    }
+}
+
+void MayaUsdProxyShapeSceneIndex::_PopulateOnIdle(void* clientData)
+{
+    std::unique_ptr<MayaUsdProxyShapeSceneIndexRefPtr> self(
+        static_cast<MayaUsdProxyShapeSceneIndexRefPtr*>(clientData));
+    MayaUsdProxyShapeSceneIndexRefPtr sceneIndex = *self;
+    sceneIndex->_populateOnIdlePending = false;
+    if (sceneIndex->_dagNodeHandle.isValid() && sceneIndex->_dagNodeHandle.isAlive()) {
+        sceneIndex->Populate();
+    }
 }
 
 void MayaUsdProxyShapeSceneIndex::_ObjectsChanged(
@@ -138,20 +171,30 @@ void MayaUsdProxyShapeSceneIndex::_PopulateAndApplyPendingChanges()
 { 
     Populate();
     _usdImagingStageSceneIndex->ApplyPendingUpdates();
+    if (_extentsHintSceneIndex) {
+        _extentsHintSceneIndex->refreshSyntheticPrims();
+    }
 }
 
 void MayaUsdProxyShapeSceneIndex::Populate()
 {
     if (!_populated) {
         auto stage = _proxyStage.getUsdStage();
-        // Check whether the pseudo-root has children
-        if (stage && (!stage->GetPseudoRoot().GetChildren().empty())) {
+        bool hasAuthoredRootPrims = false;
+        if (stage) {
+            const auto rootPrims = stage->GetRootLayer()->GetRootPrims();
+            hasAuthoredRootPrims = rootPrims.begin() != rootPrims.end();
+        }
+        if (hasAuthoredRootPrims) {
             ++_nbPopulateCalls;
             Fvp::Instruments::instance().set(kNbPopulateCalls, VtValue(_nbPopulateCalls));
-            _usdImagingStageSceneIndex->SetStage(stage);
             _stage = stage;
             if (_sharedStage) {
                 *_sharedStage = stage;
+            }
+            _usdImagingStageSceneIndex->SetStage(stage);
+            if (_extentsHintSceneIndex) {
+                _extentsHintSceneIndex->refreshSyntheticPrims();
             }
             // Set the initial time
             UpdateTime();
